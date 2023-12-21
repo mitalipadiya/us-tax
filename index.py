@@ -5,6 +5,7 @@ import os
 import tiktoken
 import json
 import pandas as pd
+import time
 
 
 load_dotenv()
@@ -28,19 +29,119 @@ allTests = paginatedData['results']
 case_data_list = []
 cnt = 0
 
+def append_data_summarization(data, processedData, max_tokens):
+    summary = ""
+    summaryRequest= '''\n summarize in max 1000 tokens to get this information 
+1. Name of petitioners / taxpayers
+2. Name of Judge
+3. Type of issue (income tax; excise tax; anything else ['whistleblower])
+4. Type of taxpayer (individual; corporation)
+5. Year the case was decided (year of decision)
+6. Number of years for which the taxpayer is appealing (e.g., 2005 and 2006; therefore 2 years)
+7. Gender of judge (male/female)
+8. Gender of appellant/taxpayer (male/female)
+9. Outcome/settlement to the taxpayer (Win [100% successful], Lose, Partially successful [neither win 100% nor lose])
+10. Outcome reason (Brief description of outcome)
+11. coowners of petitioner with their roles'''
+
+    summary += "\n previous page summary:\n[" + processedData + "]\n"
+    summary +="consider this previous page summary and update anything if needed on basis of next page information and give a concrete summary\n"
+    lines = data.split('\n')
+    current_chunk = summary
+    while lines:
+        next_line = lines[0]  # Peek at the first line
+        if num_tokens_from_string(current_chunk + next_line + '\n') <= max_tokens:
+            current_chunk += next_line + '\n'
+            lines.pop(0)  # Remove the line that was just added
+        else:
+            break  # Stop adding lines if the token limit is exceeded
+
+    # The remaining data after removing processed lines
+    remaining_data = '\n'.join(lines)
+    return current_chunk + summaryRequest, remaining_data
+
+def json_request_append(data):
+    jsonRequest= '''\n Create a JSON object with the following details, ensuring each key and corresponding value is properly formatted within double quotes. The JSON should include these keys:
+
+'petitioners_taxpayers': [Name of petitioners or taxpayers],
+'judge': [Name of Judge],
+'issue': [Type of issue, e.g., income tax, excise tax, whistleblower],
+'type_of_taxpayer': [Type of taxpayer, e.g., individual, corporation],
+'year_of_decision': [Year the case was decided],
+'number_of_years_appealed': [Number of years for which the taxpayer is appealing],
+'gender_of_judge': [Gender of the judge, e.g., male, female],
+'gender_of_appellant_taxpayer': [Gender of the appellant/taxpayer],
+'outcome': [Outcome for the taxpayer, e.g., Win, Lose, Partially successful],
+'outcome_reason': [Outcome reason in brief]
+'coowners': [Co-owners of the petitioner and their roles, if any].
+
+Replace the bracketed sections with the specific information for each key.'''
+
+    data += jsonRequest
+    return data
+
 def num_tokens_from_string(string: str) -> int:
     """Returns the number of tokens in a text string."""
     encoding = tiktoken.get_encoding("cl100k_base")
     num_tokens = len(encoding.encode(string))
     return num_tokens
 
+def chunk_data(data, max_tokens):
+    """
+    Splits the data into chunks, each with a token count less than or equal to max_tokens.
+    """
+    chunks = []
+    current_chunk = ""
+    for line in data.split('\n'):
+        # Check the token count of the current chunk + new line
+        if num_tokens_from_string(current_chunk + line + '\n') <= max_tokens:
+            current_chunk += line + '\n'
+        else:
+            if current_chunk:  # Add the current chunk if it's not empty
+                chunks.append(current_chunk)
+            current_chunk = line + '\n'  # Start a new chunk
+
+    if current_chunk:  # Add the last chunk if it's not empty
+        chunks.append(current_chunk)
+    return chunks
+
+
+def process_completion(completion):
+    try:
+        generated_content = completion.choices[0].message.content
+        print("Output ==>", generated_content)
+        if not generated_content:
+            print("No content received in completion response.")
+            return None
+        # generated_data = json.loads(generated_content)
+        return generated_content
+    except json.JSONDecodeError as e:
+        print(f"Error parsing generated content: {e}")
+        print("Raw content:", generated_content)  # Temporarily print raw content for debugging
+        return None
+
+def process_completion_json(completion):
+    try:
+        generated_content = completion.choices[0].message.content
+        print("Output ==>", generated_content)
+        if not generated_content:
+            print("No content received in completion response.")
+            return None
+        generated_data = json.loads(generated_content)
+        return generated_data
+    except json.JSONDecodeError as e:
+        print(f"Error parsing generated content: {e}")
+        print("Raw content:", generated_content)  # Temporarily print raw content for debugging
+        return None
+
+request_count = 0
 for i, test in enumerate(allTests):
     generated_data = {}
     cnt = cnt + 1
     testUrl = test['url']
     response = requests.get(testUrl + '?full_case=true', headers={'Authorization': token})
     caseData = ""
-    if i == 1:
+    if cnt == 5:
         fullCaseJson = response.json()
         opinionType = ""
         caseData += "Parties: " + fullCaseJson['name'] + "\n"
@@ -54,71 +155,117 @@ for i, test in enumerate(allTests):
             opinionType = opinions[0]['type']
             caseData += "Opinion: " + opinions[0]['text']
 
-            caseData += '''\n need this data in json format
-1. Name of petitioners / taxpayers
-2. Name of Judge
-3. Type of issue (income tax; excise tax; anything else ['whistleblower])
-4. Type of taxpayer (individual; corporation)
-5. Year the case was decided (year of decision)
-6. Number of years for which the taxpayer is appealing (e.g., 2005 and 2006; therefore 2 years)
-7. Gender of judge (male/female)
-8. Gender of appellant/taxpayer (male/female)
-9. Outcome (settlement) to the taxpayer [Win (100% successful), Lose, Partially successful (neither win 100% nor lose)] with description - reason
-10. coowners of petitioner with their roles'''
-
+            jsonRequestData = json_request_append(caseData)
+            tokens = num_tokens_from_string(jsonRequestData)
             # # Calculate token length without making an API call
             # tokens = token_count(caseData)
 
             # Check if the token count exceeds the maximum limit
-            tokens = num_tokens_from_string(caseData)
+            print(tokens)
+            aggregated_data = []
             if  tokens > 4096:
-                generated_data["URL"] = testUrl + "?full_case=true"
-                generated_data["Frontend URL"] = frontendUrl
-                generated_data["No. of tokens"] = tokens
-                case_data_list.append(generated_data)
-                print("Length of case_data_list:", len(case_data_list))
-                print(f"Token count ({tokens}) exceeds the maximum limit. Skipping this case.")
-                continue
+                updated_case_data = caseData
+                processed_data = ""
+                case_data_chunks, updated_case_data = append_data_summarization(updated_case_data,"", 3800)
+                
+                while(num_tokens_from_string(updated_case_data) != 0):
+                    print(num_tokens_from_string(case_data_chunks))
+                    # print("Input ==>", case_data_chunks)
+                    completion = client.chat.completions.create(
+                        model="gpt-3.5-turbo",
+                        messages=[
+                        {"role": "user", "content": case_data_chunks}
+                        ])
 
-            # Append caseData to the list
-            # case_data_list.append(caseData)
+                    request_count += 1
+            
+                    # Process each completion
+                    processed_data = process_completion(completion)
+                    case_data_chunks, updated_case_data = append_data_summarization(updated_case_data,processed_data, 3800)
 
-            completion = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "user", "content": caseData}
-                ])
+                    # Check if the request count is a multiple of 3
+                    if request_count % 3 == 0:
+                        time.sleep(60)  # Delay for 1 minute
 
-            # Extract the generated content from the completion response
-            generated_content = completion.choices[0].message.content
+                jsonRequestData = json_request_append(processed_data)
+                if request_count % 3 == 0:
+                    time.sleep(60) 
+                    completion = client.chat.completions.create(
+                        model="gpt-3.5-turbo",
+                        messages=[
+                        {"role": "user", "content": jsonRequestData}
+                        ])
+                    request_count += 1
+                    generated_data = process_completion_json(completion)
+                    print("JSON output ==>", generated_data)
 
-            # Print the generated content (for verification)
-            # print(generated_content)
-
-            # Parse the generated content as JSON
-            try:
-                generated_data = json.loads(generated_content)
                 generated_data["URL"] = testUrl + "?full_case=true"
                 generated_data["Frontend URL"] = frontendUrl
                 generated_data["Opinion Type"] = opinionType
-            except json.JSONDecodeError as e:
-                print(f"Error parsing generated content: {e}")
-                continue
+                case_data_list.append(generated_data)
+                # print("Length of case_data_list:", len(case_data_list))
+                # print(f"Token count ({tokens}) exceeds the maximum limit. Skipping this case.")
+                # continue
+
+            # Append caseData to the list
+            # case_data_list.append(caseData)
+            else:
+                # Check if the request count is a multiple of 3
+                if request_count % 3 == 0:
+                    time.sleep(60)  # Delay for 1 minute
+                completion = client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "user", "content": jsonRequestData}
+                    ])
+
+                request_count += 1
+
+                # Extract the generated content from the completion response
+                generated_content = completion.choices[0].message.content
+
+                # Print the generated content (for verification)
+                # print(generated_content)
+
+                # Parse the generated content as JSON
+                try:
+                    generated_data = json.loads(generated_content)
+                    generated_data["URL"] = testUrl + "?full_case=true"
+                    generated_data["Frontend URL"] = frontendUrl
+                    generated_data["Opinion Type"] = opinionType
+                    case_data_list.append(generated_data)
+                except json.JSONDecodeError as e:
+                    print(f"Error parsing generated content: {e}")
+                    continue
 
             # Append generated data to the list
-            case_data_list.append(generated_data)
-            print("Length of case_data_list:", len(case_data_list))
+            # case_data_list.append(generated_data)
+            # print("Length of case_data_list:", len(case_data_list))
 
         else:
             generated_data["URL"] = testUrl + "?full_case=true"
             generated_data["Frontend URL"] = frontendUrl
             generated_data["No. of Opinions"] = len(opinions)
-            generated_data["Parties"] = fullCaseJson['name']
+            generated_data["petitioners_taxpayers"] = fullCaseJson['name']
             case_data_list.append(generated_data)
             # print(caseData)
 
-# Create a DataFrame from the case_data_list
-df = pd.DataFrame(case_data_list)
+# Define the Excel file path
+excel_file_path = "generated_data_output.xlsx"
 
-# Save the DataFrame to an Excel file
-df.to_excel("generated_data_output.xlsx", index=False)
+# Check if the Excel file exists
+try:
+    # Read the existing Excel file
+    existing_df = pd.read_excel(excel_file_path)
+except FileNotFoundError:
+    # If the file does not exist, create an empty DataFrame with the same columns
+    existing_df = pd.DataFrame(columns=case_data_list[0].keys())
+
+# Create a DataFrame from the case_data_list
+new_df = pd.DataFrame(case_data_list)
+
+# Concatenate the new data with the existing data
+final_df = pd.concat([existing_df, new_df], ignore_index=True)
+
+# Save the updated DataFrame to the Excel file
+final_df.to_excel(excel_file_path, index=False)
