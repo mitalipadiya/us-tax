@@ -14,7 +14,7 @@ api_key = os.getenv("COMPANY_OPENAI_API_KEY")
 client = OpenAI(api_key=api_key)
 
 page_size = '10'
-token = 'Token c2450095ea9280c658de7aaa6788117302940843'
+token = 'Token ' + os.getenv("TOKEN")
 encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
 
 def append_data_summarization(data, processedData, max_tokens):
@@ -147,9 +147,9 @@ def write_to_excel(case_data_list):
 cnt = 0
 # currentPage = 'https://api.case.law/v1/cases/?page_size=' + page_size + '&decision_date_min=1900-01-01&decision_date_max=2020-12-31&court=tc&cursor=eyJwIjogWzAuMCwgMjMzODg5N119&ordering=relevance'
 
-currentPage = 'https://api.case.law/v1/cases/?court=tc&cursor=eyJwIjogWzAuMCwgMTIxMTM1MDJdfQ%3D%3D&decision_date_max=2020-12-31&decision_date_min=1900-01-01&ordering=relevance&page_size=10'
+currentPage = 'https://api.case.law/v1/cases/?court=tc&cursor=eyJwIjogWzAuMCwgMTIyNTY3NjBdfQ%3D%3D&decision_date_max=2020-12-31&decision_date_min=1900-01-01&ordering=relevance&page_size=10'
 
-while cnt <= 100:
+while cnt <= 10:
     cnt = cnt + 1
     paginatedTests = requests.get(
         currentPage,
@@ -171,7 +171,7 @@ while cnt <= 100:
         testUrl = test['url']
         response = requests.get(testUrl + '?full_case=true', headers={'Authorization': token})
         caseData = ""
-        if cnt <= 100:
+        if cnt <= 10:
             fullCaseJson = response.json()
             opinionType = ""
             caseData += "Parties: " + fullCaseJson['name'] + "\n"
